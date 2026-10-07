@@ -1,0 +1,7 @@
+node_modules/
+app/dist/
+server/.venv/
+server/__pycache__/
+device/tc002/__pycache__/
+*.pyc
+.DS_Store
