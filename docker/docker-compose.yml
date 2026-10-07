@@ -1,0 +1,11 @@
+services:
+  muse-alarm-clock:
+    image: ghcr.io/bubbywoodz/muse-alarm-clock:latest
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT}:8000"
+    volumes:
+      - ${APP_DATA_DIR}:/data
+    environment:
+      - DB_PATH=/data/alarm.db
+      - TC002_TOKEN=${TC002_TOKEN:-}
