@@ -1,0 +1,26 @@
+manifestVersion: 1
+id: muse-alarm-clock
+name: Muse Alarm Clock
+version: "0.1.0"
+tagline: Visual alarm-sequence builder for your pixel clock
+description: >-
+  Build alarm workflows on a drag-and-drop canvas — time triggers, physical
+  button dismissal, and morning pages (greeting, weather, wake reason, work
+  shift). Drives Ulanzi TC002 clocks running the community firmware over
+  your local network. Your AI agent can author and trigger workflows too.
+developer: Ryker for Christian
+website: https://github.com/BubbyWoodz/muse-alarm-clock
+dependencies: []
+repo: https://github.com/BubbyWoodz/muse-alarm-clock
+support: https://github.com/BubbyWoodz/muse-alarm-clock/issues
+port: 8000
+gallery:
+  - 1.jpg
+  - 2.jpg
+releaseNotes: >-
+  First release: n8n-style workflow editor, FastAPI execution engine with
+  12AM/3AM alarm computation and 10-minute escalation, TC002 community
+  firmware driver with physical button detection, per-workflow author
+  badges (you / Ryker).
+submitter: Christian
+submission: https://github.com/BubbyWoodz/muse-alarm-clock
