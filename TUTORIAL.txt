@@ -1,0 +1,176 @@
+================================================================
+MUSE ALARM CLOCK — HOW IT WAS BUILT (plain-English walkthrough)
+================================================================
+This file explains the code section by section: what each piece does,
+why it exists, and how the pieces fit together. It is written as the
+build happens, in order.
+
+----------------------------------------------------------------
+SECTION 0: THE BIG PICTURE (read this first)
+----------------------------------------------------------------
+The app has four parts that talk to each other:
+
+  [app/]  ──web dashboard──>  [server/]  ──WiFi──>  [device/tc002/] ──> the clock
+                                   |
+                              [docker/ + brumble/] = how it ships to your Umbrel
+
+- app/ is what you see: the sequence cards and the drag-and-drop timeline.
+- server/ is the brain: it runs your sequences on schedule (the alarm at
+  8 AM, the button-press trigger, the pages after).
+- device/ is the translator: it turns "show Good Morning Rhy" into the
+  exact HTTP/MQTT messages the TC002 understands.
+- docker/ + brumble/ are the packaging: they wrap everything so anyone
+  can install it on their Umbrel with one click.
+
+Why split it like this? So a new clock (not just the TC002) only needs a
+new translator in device/. The brain and the dashboard never change.
+
+----------------------------------------------------------------
+SECTION 1: PROJECT SCAFFOLD (this step)
+----------------------------------------------------------------
+What was made: empty folders (app, server, device, docker, brumble),
+a README.md, and this file.
+
+Why: every project starts with a skeleton so later code has a home.
+Nothing here runs yet — it is the table of contents for the build.
+Sections below get added as each piece is written.
+
+----------------------------------------------------------------
+SECTION 2: HARDWARE PROOF (next — needs the clock on WiFi)
+----------------------------------------------------------------
+(To be written after the button-press test.)
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+SECTION 2: THE FIRMWARE FLASH (2026-10-07)
+----------------------------------------------------------------
+Why: the stock Ulanzi firmware could not report physical button presses
+over the network — the dismiss signal the alarm needs. The community
+firmware (tc002-customisation v0.3.1) exposes every button press through
+its HTTP API.
+
+How it was done:
+- Backed up the stock res partition (mtd3, 8.4MB) to
+  backup/res.backup-2026-10-07.img and verified it unpacks.
+- Built a device-specific image with runtime/tools/tc002-mkimage.sh: the
+  stock squashfs plus the community runtime binaries (tc002d, supervisor,
+  netd, audiod, berryd, ntfy, busybox). The script validates the result
+  ("the device would accept this image").
+- Flashed via the stock /update OTA endpoint: hosted the 4.4MB image on
+  the Umbrel over HTTP and POSTed the URL/MD5/size. The clock downloaded
+  it, verified, flashed, and rebooted into the community firmware.
+- Confirmed: a physical middle-button press moved the API revision 4->5.
+  Timezone set to America/Los_Angeles, NTP to 162.159.200.1, clock synced.
+- API tokens (admin + control) live at ~/workspace/tc002-fw/tokens (0600).
+
+The three top buttons map to three display modes: minus = time, middle =
+clock face, plus = canvas. The alarm uses the middle button as dismiss.
+
+----------------------------------------------------------------
+SECTION 3: THE FRONTEND (app/)
+----------------------------------------------------------------
+What: a Vite + React 19 + TypeScript single-page app. The visual workflow
+editor Christian asked for — n8n-style: drag blocks from a palette onto
+a canvas, wire them with arrows, click a block to configure it.
+
+Key files:
+- src/types.ts — Sequence {id, name, enabled, author, blocks[]}, Block
+  {id, type, config, position}, Edge {from, to}. author is 'user' or
+  'ryker' so every card shows who made it.
+- src/components/Dashboard.tsx — card grid. Each card: name, enabled
+  toggle, next-run hint, author badge (You / Ryker), edit/delete.
+- src/components/Editor.tsx — the react-flow canvas. Drop, connect,
+  drag-reorder, click-to-configure, keyboard delete, test-run with an
+  animated step-through.
+- src/components/Palette.tsx — draggable block types: Time Trigger,
+  Button Trigger, Alarm, Page, Audio, Wait.
+- src/components/ConfigPanel.tsx — per-type editors (time, sound file,
+  text, duration, timeout...).
+- src/blockDefs.ts — the block catalog: labels, accent colors, defaults.
+- src/icons.tsx — inline SVGs, theme-aware via currentColor. No emojis,
+  ever.
+- src/storage.ts — localStorage persistence + the default Wake Up
+  Sequence template (the 8-block workflow, author 'ryker').
+
+Why react-flow: it is the standard library for node-graph editors —
+the same interaction model as n8n. Building drag-and-drop from scratch
+would be months; react-flow gives it in days.
+
+----------------------------------------------------------------
+SECTION 4: THE BACKEND (server/)
+----------------------------------------------------------------
+What: FastAPI + SQLite. The brain: stores sequences, runs them on
+schedule, and talks to clocks through a driver interface.
+
+Key files:
+- main.py — all routes. Also serves the built frontend (app/dist) as a
+  single-page app, so one Docker container is the whole product.
+- models.py — Pydantic shapes for blocks, edges, sequences, devices,
+  executions.
+- db.py — SQLite store (thread-safe). Sequences get an author column
+  ('user' default, 'ryker' when the AI creates one).
+- driver.py — ClockDriver ABC (show_text, play_sound, wait_for_button,
+  set_brightness) + MockClockDriver (logs, for tests) + TC002ClockDriver
+  (adapter wrapping device/tc002/driver.py — real hardware when
+  device type is 'tc002').
+- engine.py — the scheduler and executor. Ticks every 30s. Computes
+  alarms at 12:00 AM, fail-safe recompute at 3:00 AM. Walks blocks via
+  edges; Button Trigger pauses up to 10 min for a physical press, then
+  escalates (max-volume alarm). Supports dry-run (/test) and live
+  (/execute) runs, plus /executions/{id} status and /cancel.
+
+Why FastAPI: it is the fastest way to get a typed, documented REST API
+in Python — the /docs page is automatic, which matters because the AI
+agent drives these endpoints directly, not just the dashboard.
+
+The agent-drivable endpoints (Ryker uses these, no UI needed):
+  POST /api/sequences            create a workflow (author: 'ryker')
+  POST /api/sequences/{id}/execute   run it now -> execution ID
+  GET  /api/executions/{id}      status: which block, waiting/cancelled/...
+  POST /api/executions/{id}/cancel
+
+----------------------------------------------------------------
+SECTION 5: THE DEVICE DRIVER (device/tc002/)
+----------------------------------------------------------------
+What: a Python package that speaks the community firmware's HTTP API.
+The translator between "show Good Morning Rhy" and the exact bytes.
+
+Key file: driver.py — class TC002Driver(ip, token).
+- GET /api/v1/status -> revision counter, display base, time sync state.
+- PATCH /api/v1/config -> base, brightness, timezone, ntp_server.
+- POST /api/v1/notify {text, duration_s, colour} -> scrolling text.
+- POST /api/v1/sound {name, volume, loop} -> audio. {stop:true} stops.
+- POST /api/v1/input {control, event} -> inject a button press (testing).
+- wait_for_button(): THE critical method. Primary: the /events SSE
+  stream (real-time). Fallback: poll /status every 0.5s and watch the
+  revision counter increment — verified live (press moved rev 4->5).
+
+Token scopes: config writes need the admin token; actions work with the
+control token. The driver surfaces 403s as TC002Error so callers know.
+
+Why a separate package: a future clock (not the TC002) only needs a new
+driver here. The server's ClockDriver ABC never changes.
+
+----------------------------------------------------------------
+SECTION 6: PACKAGING (docker/ + brumble/ + .github/)
+----------------------------------------------------------------
+How it ships to the Umbrel, following the Brumble rule: source in a
+GitHub repo, GHCR image built on every push to main, store package pins
+the image. No hand-editing the live Umbrel.
+
+- docker/Dockerfile — multi-stage. Stage 1 (node:20) builds the React
+  app. Stage 2 (python:3.12-slim) installs server + driver requirements,
+  copies server/, device/, and the built frontend to /app/frontend.
+  Runs uvicorn on port 8000. SQLite at /data/alarm.db (a volume, so
+  sequences survive updates).
+- docker/docker-compose.yml — one service, port, /data volume, optional
+  TC002_TOKEN env.
+- brumble/umbrel-app.yml — the app-store manifest (id, name, version,
+  port, gallery, release notes). This is what the Brumble store reads.
+- .github/workflows/build.yml — on push to main: buildx build, push to
+  ghcr.io/bubbywoodz/muse-alarm-clock:latest + :<version from manifest>.
+
+Why one container: the FastAPI app serves the frontend itself (see
+_mount_frontend in main.py). One image, one port, no reverse-proxy
+fuss — the simplest thing that installs cleanly on Umbrel.
+----------------------------------------------------------------
